@@ -1,0 +1,6 @@
+flask
+customtkinter
+pillow
+openpyxl
+pyinstaller
+pyarmor
