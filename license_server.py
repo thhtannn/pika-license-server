@@ -1,7 +1,7 @@
 # license_server.py
-# PIKA License Server PRO for Render
-# Admin: /admin?token=YOUR_ADMIN_TOKEN
-# Client API: /api/activate
+# PIKA License Server PRO + JSON Admin API
+# Upload file này lên Render thay license_server.py cũ.
+# requirements.txt chỉ cần: flask
 
 from __future__ import annotations
 
@@ -11,9 +11,8 @@ import secrets
 import string
 from datetime import datetime, timedelta, timezone
 from functools import wraps
-from pathlib import Path
 
-from flask import Flask, jsonify, redirect, render_template_string, request, url_for
+from flask import Flask, jsonify, redirect, render_template_string, request
 
 APP = Flask(__name__)
 
@@ -22,15 +21,15 @@ ADMIN_TOKEN = os.environ.get("PIKA_ADMIN_TOKEN", os.environ.get("ADMIN_TOKEN", "
 APP_ID = os.environ.get("PIKA_APP_ID", "PIKA_TOOL")
 
 
-def utc_now() -> datetime:
+def utc_now():
     return datetime.now(timezone.utc)
 
 
-def iso(dt: datetime | None = None) -> str:
+def iso(dt=None):
     return (dt or utc_now()).isoformat()
 
 
-def parse_iso(value: str | None):
+def parse_iso(value):
     if not value:
         return None
     try:
@@ -48,7 +47,6 @@ def db():
 def init_db():
     con = db()
     cur = con.cursor()
-
     cur.execute("""
     CREATE TABLE IF NOT EXISTS licenses (
         license_key TEXT PRIMARY KEY,
@@ -61,7 +59,6 @@ def init_db():
         updated_at TEXT NOT NULL
     )
     """)
-
     cur.execute("""
     CREATE TABLE IF NOT EXISTS devices (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -74,7 +71,6 @@ def init_db():
         UNIQUE(license_key, device_id)
     )
     """)
-
     cur.execute("""
     CREATE TABLE IF NOT EXISTS events (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -87,26 +83,29 @@ def init_db():
         message TEXT
     )
     """)
-
     con.commit()
     con.close()
 
 
-def make_key(prefix: str = "PIKA") -> str:
+def rowdict(row):
+    return dict(row) if row else None
+
+
+def make_key(prefix="PIKA"):
     alphabet = string.ascii_uppercase + string.digits
     parts = ["".join(secrets.choice(alphabet) for _ in range(4)) for _ in range(4)]
     return prefix + "-" + "-".join(parts)
 
 
-def client_ip() -> str:
+def client_ip():
     return (request.headers.get("x-forwarded-for") or request.remote_addr or "").split(",")[0].strip()
 
 
-def ua() -> str:
+def ua():
     return request.headers.get("user-agent", "")
 
 
-def log_event(license_key: str | None, event: str, device_id: str = "", message: str = ""):
+def log_event(license_key, event, device_id="", message=""):
     con = db()
     con.execute(
         "INSERT INTO events(created_at, license_key, event, device_id, ip, user_agent, message) VALUES(?,?,?,?,?,?,?)",
@@ -116,12 +115,16 @@ def log_event(license_key: str | None, event: str, device_id: str = "", message:
     con.close()
 
 
+def get_token():
+    data = request.get_json(silent=True) or {}
+    return request.args.get("token") or request.form.get("token") or data.get("token") or ""
+
+
 def require_admin(fn):
     @wraps(fn)
     def wrapper(*args, **kwargs):
-        token = request.args.get("token") or request.form.get("token") or ""
-        if token != ADMIN_TOKEN:
-            return "Unauthorized. Add ?token=YOUR_ADMIN_TOKEN", 401
+        if get_token() != ADMIN_TOKEN:
+            return jsonify(ok=False, message="Unauthorized"), 401
         return fn(*args, **kwargs)
     return wrapper
 
@@ -139,7 +142,6 @@ def health():
 @APP.route("/api/activate", methods=["POST"])
 def api_activate():
     data = request.get_json(force=True, silent=True) or {}
-
     license_key = str(data.get("license_key", "")).strip()
     device_id = str(data.get("device_id", "")).strip()
     app_id = str(data.get("app") or data.get("app_id") or APP_ID).strip()
@@ -176,238 +178,145 @@ def api_activate():
 
     existing = con.execute(
         "SELECT * FROM devices WHERE license_key=? AND device_id=?",
-        (license_key, device_id)
+        (license_key, device_id),
     ).fetchone()
 
     device_count = con.execute(
         "SELECT COUNT(*) AS c FROM devices WHERE license_key=?",
-        (license_key,)
+        (license_key,),
     ).fetchone()["c"]
 
     if not existing and device_count >= int(lic["max_devices"]):
         con.close()
         log_event(license_key, "device_limit", device_id, f"limit={lic['max_devices']}")
-        return jsonify(ok=False, message="Key đã đạt giới hạn số máy"), 403
+        return jsonify(ok=False, message="Key đã được kích hoạt trên máy khác"), 403
 
     if existing:
-        con.execute(
-            "UPDATE devices SET last_seen=?, ip=?, user_agent=? WHERE id=?",
-            (iso(), client_ip(), ua(), existing["id"])
-        )
+        con.execute("UPDATE devices SET last_seen=?, ip=?, user_agent=? WHERE id=?", (iso(), client_ip(), ua(), existing["id"]))
         event = "checked"
     else:
         con.execute(
             "INSERT INTO devices(license_key, device_id, first_seen, last_seen, ip, user_agent) VALUES(?,?,?,?,?,?)",
-            (license_key, device_id, iso(), iso(), client_ip(), ua())
+            (license_key, device_id, iso(), iso(), client_ip(), ua()),
         )
         event = "activated"
 
     con.commit()
     con.close()
     log_event(license_key, event, device_id)
-
-    return jsonify(
-        ok=True,
-        message="License OK",
-        status=lic["status"],
-        expires_at=lic["expires_at"],
-        max_devices=lic["max_devices"],
-    )
+    return jsonify(ok=True, message="License OK", expires_at=lic["expires_at"], max_devices=lic["max_devices"])
 
 
-@APP.route("/admin")
+# =========================
+# JSON ADMIN API FOR CLIENT
+# =========================
+
+@APP.route("/api/admin/keys")
 @require_admin
-def admin():
-    token = request.args.get("token", "")
+def api_admin_keys():
     con = db()
-
-    keys = con.execute("""
+    rows = con.execute("""
         SELECT l.*,
                (SELECT COUNT(*) FROM devices d WHERE d.license_key=l.license_key) AS device_count
         FROM licenses l
         ORDER BY l.created_at DESC
     """).fetchall()
-
-    events = con.execute("SELECT * FROM events ORDER BY id DESC LIMIT 80").fetchall()
     con.close()
-
-    html = """
-<!doctype html>
-<html>
-<head>
-<meta charset="utf-8">
-<title>PIKA License Admin PRO</title>
-<style>
-body{font-family:Arial,sans-serif;background:#08111f;color:#e5eefc;margin:0;padding:24px}
-h1{font-size:34px;margin:0 0 18px}
-.card{background:#111c33;border:1px solid #263653;border-radius:16px;padding:18px;margin:16px 0;box-shadow:0 12px 28px rgba(0,0,0,.25)}
-input,select,button{padding:10px;border-radius:10px;border:1px solid #334155;background:#0f172a;color:#e5eefc}
-button{background:#38bdf8;color:#06111f;font-weight:bold;cursor:pointer}
-table{width:100%;border-collapse:collapse;margin-top:12px}
-th,td{border-bottom:1px solid #263653;padding:10px;font-size:13px;vertical-align:top}
-th{text-align:left;color:#93c5fd}
-code{background:#020617;padding:4px 7px;border-radius:8px;color:#facc15}
-a{color:#67e8f9;text-decoration:none}
-.badge{padding:4px 8px;border-radius:999px;font-weight:bold;font-size:12px}
-.active{background:#14532d;color:#86efac}.blocked{background:#7f1d1d;color:#fecaca}.expired{background:#713f12;color:#fde68a}
-.small{color:#94a3b8;font-size:12px}
-.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
-</style>
-</head>
-<body>
-<h1>⚡ PIKA License Admin PRO</h1>
-<div class="small">Server OK · App: {{ app_id }}</div>
-
-<div class="card">
-<h2>Create Key</h2>
-<form method="post" action="/admin/create">
-<input type="hidden" name="token" value="{{ token }}">
-<div class="row">
-<label>Expire days <input name="days" value="30" size="6"></label>
-<label>Max devices <input name="max_devices" value="1" size="6"></label>
-<label>Note <input name="note" placeholder="customer name / memo" size="30"></label>
-<button>Create</button>
-</div>
-</form>
-</div>
-
-<div class="card">
-<h2>Keys</h2>
-<table>
-<tr><th>Key</th><th>Status</th><th>Expire</th><th>Devices</th><th>Note</th><th>Actions</th></tr>
-{% for k in keys %}
-<tr>
-<td><code>{{ k.license_key }}</code></td>
-<td><span class="badge {{ k.status }}">{{ k.status }}</span></td>
-<td>{{ k.expires_at or "" }}</td>
-<td>{{ k.device_count }} / {{ k.max_devices }}</td>
-<td>{{ k.note or "" }}</td>
-<td>
-<a href="/admin/devices?token={{ token }}&key={{ k.license_key }}">devices</a> |
-<a href="/admin/reset?token={{ token }}&key={{ k.license_key }}">reset</a> |
-<a href="/admin/block?token={{ token }}&key={{ k.license_key }}">block</a> |
-<a href="/admin/unblock?token={{ token }}&key={{ k.license_key }}">unblock</a> |
-<a href="/admin/delete?token={{ token }}&key={{ k.license_key }}" onclick="return confirm('Delete key?')">delete</a>
-</td>
-</tr>
-{% endfor %}
-</table>
-</div>
-
-<div class="card">
-<h2>Recent Events</h2>
-<table>
-<tr><th>Time</th><th>Key</th><th>Event</th><th>Device</th><th>IP</th><th>Message</th></tr>
-{% for e in events %}
-<tr>
-<td>{{ e.created_at }}</td><td><code>{{ e.license_key or "" }}</code></td><td>{{ e.event }}</td>
-<td>{{ e.device_id or "" }}</td><td>{{ e.ip or "" }}</td><td>{{ e.message or "" }}</td>
-</tr>
-{% endfor %}
-</table>
-</div>
-</body>
-</html>
-"""
-    return render_template_string(html, token=token, keys=keys, events=events, app_id=APP_ID)
+    return jsonify(ok=True, keys=[rowdict(r) for r in rows])
 
 
-@APP.route("/admin/create", methods=["POST"])
+@APP.route("/api/admin/events")
 @require_admin
-def admin_create():
-    token = request.form.get("token", "")
-    days = int(request.form.get("days") or 30)
-    max_devices = int(request.form.get("max_devices") or 1)
-    note = request.form.get("note", "")
-    license_key = make_key()
+def api_admin_events():
+    limit = int(request.args.get("limit", 50))
+    con = db()
+    rows = con.execute("SELECT * FROM events ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
+    con.close()
+    return jsonify(ok=True, events=[rowdict(r) for r in rows])
+
+
+@APP.route("/api/admin/create", methods=["POST"])
+@require_admin
+def api_admin_create():
+    data = request.get_json(silent=True) or {}
+    days = int(data.get("days") or 30)
+    max_devices = int(data.get("max_devices") or 1)
+    note = str(data.get("note") or "")
+    key = make_key()
     expires_at = iso(utc_now() + timedelta(days=days)) if days > 0 else None
 
     con = db()
     con.execute("""
         INSERT INTO licenses(license_key, app_id, status, max_devices, expires_at, note, created_at, updated_at)
         VALUES(?,?,?,?,?,?,?,?)
-    """, (license_key, APP_ID, "active", max_devices, expires_at, note, iso(), iso()))
+    """, (key, APP_ID, "active", max_devices, expires_at, note, iso(), iso()))
     con.commit()
     con.close()
+    log_event(key, "created", "", f"days={days}, max_devices={max_devices}")
+    return jsonify(ok=True, license_key=key)
 
-    log_event(license_key, "created", "", f"days={days}, max_devices={max_devices}")
-    return redirect(f"/admin?token={token}")
 
-
-@APP.route("/admin/block")
-@require_admin
-def admin_block():
-    token = request.args.get("token", "")
-    key = request.args.get("key", "")
+def _admin_update_status(status):
+    data = request.get_json(silent=True) or {}
+    key = str(data.get("license_key") or "")
     con = db()
-    con.execute("UPDATE licenses SET status='blocked', updated_at=? WHERE license_key=?", (iso(), key))
+    con.execute("UPDATE licenses SET status=?, updated_at=? WHERE license_key=?", (status, iso(), key))
     con.commit()
     con.close()
-    log_event(key, "admin_block")
-    return redirect(f"/admin?token={token}")
+    log_event(key, f"admin_{status}")
+    return jsonify(ok=True)
 
 
-@APP.route("/admin/unblock")
+@APP.route("/api/admin/block", methods=["POST"])
 @require_admin
-def admin_unblock():
-    token = request.args.get("token", "")
-    key = request.args.get("key", "")
-    con = db()
-    con.execute("UPDATE licenses SET status='active', updated_at=? WHERE license_key=?", (iso(), key))
-    con.commit()
-    con.close()
-    log_event(key, "admin_unblock")
-    return redirect(f"/admin?token={token}")
+def api_admin_block():
+    return _admin_update_status("blocked")
 
 
-@APP.route("/admin/reset")
+@APP.route("/api/admin/unblock", methods=["POST"])
 @require_admin
-def admin_reset():
-    token = request.args.get("token", "")
-    key = request.args.get("key", "")
+def api_admin_unblock():
+    return _admin_update_status("active")
+
+
+@APP.route("/api/admin/reset", methods=["POST"])
+@require_admin
+def api_admin_reset():
+    data = request.get_json(silent=True) or {}
+    key = str(data.get("license_key") or "")
     con = db()
     con.execute("DELETE FROM devices WHERE license_key=?", (key,))
     con.commit()
     con.close()
     log_event(key, "admin_reset_devices")
-    return redirect(f"/admin?token={token}")
+    return jsonify(ok=True)
 
 
-@APP.route("/admin/delete")
+@APP.route("/api/admin/delete", methods=["POST"])
 @require_admin
-def admin_delete():
-    token = request.args.get("token", "")
-    key = request.args.get("key", "")
+def api_admin_delete():
+    data = request.get_json(silent=True) or {}
+    key = str(data.get("license_key") or "")
     con = db()
     con.execute("DELETE FROM devices WHERE license_key=?", (key,))
     con.execute("DELETE FROM licenses WHERE license_key=?", (key,))
     con.commit()
     con.close()
     log_event(key, "admin_delete_key")
-    return redirect(f"/admin?token={token}")
+    return jsonify(ok=True)
 
 
-@APP.route("/admin/devices")
-@require_admin
-def admin_devices():
+# Simple web admin still works
+@APP.route("/admin")
+def admin_web():
     token = request.args.get("token", "")
-    key = request.args.get("key", "")
-    con = db()
-    devices = con.execute("SELECT * FROM devices WHERE license_key=? ORDER BY last_seen DESC", (key,)).fetchall()
-    con.close()
-
-    rows = "".join(
-        f"<tr><td>{d['device_id']}</td><td>{d['first_seen']}</td><td>{d['last_seen']}</td><td>{d['ip'] or ''}</td><td>{d['user_agent'] or ''}</td></tr>"
-        for d in devices
-    )
-
-    return f"""
-    <html><head><meta charset="utf-8"><title>Devices</title>
-    <style>body{{font-family:Arial;background:#08111f;color:#e5eefc;padding:24px}}table{{width:100%;border-collapse:collapse}}td,th{{border-bottom:1px solid #263653;padding:10px}}a{{color:#67e8f9}}</style>
-    </head><body>
-    <h1>Devices for {key}</h1>
-    <a href="/admin?token={token}">← Back</a>
-    <table><tr><th>Device ID</th><th>First seen</th><th>Last seen</th><th>IP</th><th>User Agent</th></tr>{rows}</table>
+    if token != ADMIN_TOKEN:
+        return "Unauthorized. Add ?token=YOUR_ADMIN_TOKEN", 401
+    return """
+    <html><body style="font-family:Arial;background:#08111f;color:white;padding:30px">
+    <h1>PIKA License Server PRO</h1>
+    <p>JSON API is ready. Use Admin Panel inside PIKA TOOL.</p>
+    <p>Health: <a style="color:#38bdf8" href="/health">/health</a></p>
     </body></html>
     """
 
