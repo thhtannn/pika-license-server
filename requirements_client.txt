@@ -1,4 +1,1 @@
-customtkinter
-pillow
-openpyxl
-requests
+
