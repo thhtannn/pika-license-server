@@ -146,6 +146,43 @@ def make_key(prefix="PIKA"):
         for _ in range(4)
     )
 
+LATEST_VERSION = os.environ.get("PIKA_LATEST_VERSION", "2.1.0")
+UPDATE_URL = os.environ.get("PIKA_UPDATE_URL", "")
+UPDATE_SHA256 = os.environ.get("PIKA_UPDATE_SHA256", "")
+UPDATE_NOTES = os.environ.get("PIKA_UPDATE_NOTES", "New PIKA TOOL update is available.")
+
+
+def _parse_version(v):
+    parts = []
+    for x in str(v).strip().split("."):
+        try:
+            parts.append(int(x))
+        except Exception:
+            parts.append(0)
+    while len(parts) < 3:
+        parts.append(0)
+    return tuple(parts[:3])
+
+
+@APP.route("/api/update/check")
+def api_update_check():
+    current = request.args.get("version", "0.0.0")
+    app_id = request.args.get("app", "PIKA_TOOL")
+
+    if app_id != APP_ID and app_id != "PIKA_TOOL":
+        return jsonify(ok=False, message="wrong app"), 400
+
+    has_update = _parse_version(LATEST_VERSION) > _parse_version(current)
+
+    return jsonify(
+        ok=True,
+        current_version=current,
+        latest_version=LATEST_VERSION,
+        has_update=has_update,
+        download_url=UPDATE_URL if has_update else "",
+        sha256=UPDATE_SHA256 if has_update else "",
+        notes=UPDATE_NOTES,
+    )
 
 def client_ip():
     return (request.headers.get("x-forwarded-for") or request.remote_addr or "").split(",")[0].strip()
