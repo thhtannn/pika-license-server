@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/><meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>PIKA Stealth Admin</title>
+<style>
+:root{--bg:#07111f;--card:#111c33;--card2:#162544;--text:#f8fafc;--muted:#94a3b8;--cyan:#38bdf8;--green:#a3ff3f;--red:#fb7185;--yellow:#facc15;--purple:#a855f7;--border:#263653}
+*{box-sizing:border-box}body{margin:0;background:radial-gradient(circle at top left,rgba(56,189,248,.2),transparent 28%),radial-gradient(circle at top right,rgba(168,85,247,.18),transparent 26%),var(--bg);color:var(--text);font-family:Inter,Segoe UI,Arial,sans-serif}
+.login{min-height:100vh;display:flex;align-items:center;justify-content:center;padding:20px}.loginCard{width:460px;background:rgba(17,28,51,.94);border:1px solid var(--border);border-radius:28px;padding:28px;box-shadow:0 30px 80px rgba(0,0,0,.4)}.logo{width:70px;height:58px;border-radius:20px;background:var(--yellow);display:flex;align-items:center;justify-content:center;font-size:34px;color:#08111f;margin-bottom:18px}
+h1{margin:0 0 6px;font-size:30px}.muted{color:var(--muted);font-size:13px}input{width:100%;background:#0f172a;color:var(--text);border:1px solid #334155;border-radius:14px;padding:13px;margin-top:10px;outline:none}.btn{border:0;border-radius:13px;padding:12px 14px;font-weight:900;cursor:pointer}.cyan{background:var(--cyan);color:#03121f}.green{background:var(--green);color:#08111f}.red{background:var(--red);color:#25030a}.gray{background:#e2e8f0;color:#0f172a}.yellow{background:var(--yellow);color:#17120a}
+.app{display:none;grid-template-columns:280px 1fr;min-height:100vh}.side{background:rgba(11,18,32,.92);border-right:1px solid var(--border);padding:24px 18px;position:sticky;top:0;height:100vh}.brand{display:flex;align-items:center;gap:14px;margin-bottom:24px}.brand .logo{width:58px;height:48px;font-size:28px;margin:0}.brand h2{margin:0}.brand p{margin:4px 0 0;color:var(--muted);font-size:12px}.nav button{width:100%;text-align:left;background:transparent;color:var(--muted);border:0;padding:14px 12px;border-radius:14px;margin:4px 0;cursor:pointer;font-weight:800}.nav button.active,.nav button:hover{background:var(--card2);color:var(--text)}
+.main{padding:28px}.top{display:flex;justify-content:space-between;align-items:center;margin-bottom:20px}.top h2{font-size:34px;margin:0}.top p{color:var(--muted);margin:4px 0 0}.grid{display:grid;gap:14px}.stats{grid-template-columns:repeat(5,minmax(150px,1fr));margin-bottom:18px}.stat{background:var(--card);border:1px solid var(--border);border-radius:22px;padding:16px;min-height:105px;position:relative}.stat:before{content:"";position:absolute;top:0;left:16px;right:16px;height:4px;background:var(--accent,var(--cyan));border-radius:99px}.stat .label{color:var(--muted);font-size:12px;font-weight:900;margin-top:12px}.stat .value{font-size:32px;font-weight:900;margin-top:8px}.card{background:rgba(17,28,51,.92);border:1px solid var(--border);border-radius:22px;padding:16px;margin-bottom:16px}.createGrid{display:grid;grid-template-columns:120px 120px 1fr 1fr 130px;gap:10px;align-items:end}
+table{width:100%;border-collapse:collapse;font-size:13px}th{text-align:left;color:#93c5fd;padding:12px;border-bottom:1px solid var(--border)}td{padding:11px 12px;border-bottom:1px solid rgba(38,54,83,.65)}tr:hover{background:rgba(56,189,248,.06)}.pill{display:inline-flex;padding:5px 9px;border-radius:999px;font-weight:900;font-size:12px}.pill.active{background:rgba(163,255,63,.14);color:var(--green)}.pill.blocked{background:rgba(251,113,133,.14);color:var(--red)}.pill.expired{background:rgba(250,204,21,.14);color:var(--yellow)}.actions{display:flex;gap:6px;flex-wrap:wrap}.actions .btn{padding:7px 9px;border-radius:9px;font-size:12px}.toast{position:fixed;right:24px;bottom:24px;background:var(--card2);border:1px solid var(--border);padding:14px 18px;border-radius:16px;display:none}.dangerRow{background:rgba(251,113,133,.08)}.small{font-size:12px;color:var(--muted)}pre{white-space:pre-wrap;background:#0f172a;border:1px solid var(--border);border-radius:16px;padding:12px;max-height:430px;overflow:auto;color:#d1fae5}
+@media(max-width:1100px){.app{grid-template-columns:1fr}.side{height:auto;position:relative}.stats{grid-template-columns:repeat(2,1fr)}.createGrid{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<section id="login" class="login">
+  <div class="loginCard">
+    <div class="logo">⚡</div>
+    <h1>PIKA Stealth Admin</h1>
+    <div class="muted">Route ẩn + Token + Password. Không dùng /admin public.</div>
+    <input id="loginToken" type="password" placeholder="Admin Token"/>
+    <input id="loginPassword" type="password" placeholder="Admin Password"/>
+    <button class="btn cyan" style="width:100%;margin-top:14px" onclick="login()">Login</button>
+    <div id="loginMsg" class="muted" style="margin-top:12px"></div>
+  </div>
+</section>
+
+<div id="app" class="app">
+  <aside class="side">
+    <div class="brand"><div class="logo">⚡</div><div><h2>PIKA ADMIN</h2><p>Stealth dashboard</p></div></div>
+    <nav class="nav">
+      <button class="active" onclick="showTab('keys',this)">🔑 Keys</button>
+      <button onclick="showTab('devices',this)">💻 Devices</button>
+      <button onclick="showTab('violations',this)">🚨 Share Detect</button>
+      <button onclick="showTab('events',this)">📜 Events</button>
+      <button onclick="logout()">🚪 Logout</button>
+    </nav>
+  </aside>
+  <main class="main">
+    <div class="top"><div><h2>Dashboard</h2><p>Quản lý key, online user, reset máy và chống share.</p></div><button class="btn cyan" onclick="refreshAll()">↻ Refresh</button></div>
+    <section class="grid stats">
+      <div class="stat" style="--accent:var(--cyan)"><div class="label">TOTAL KEYS</div><div class="value" id="s_total">0</div></div>
+      <div class="stat" style="--accent:var(--green)"><div class="label">ACTIVE</div><div class="value" id="s_active">0</div></div>
+      <div class="stat" style="--accent:var(--red)"><div class="label">BLOCKED</div><div class="value" id="s_blocked">0</div></div>
+      <div class="stat" style="--accent:var(--yellow)"><div class="label">ONLINE 10M</div><div class="value" id="s_online">0</div></div>
+      <div class="stat" style="--accent:var(--purple)"><div class="label">SHARE ALERTS</div><div class="value" id="s_violations">0</div></div>
+    </section>
+
+    <section id="tab_keys">
+      <div class="card"><h3>Create New Key</h3><div class="createGrid">
+        <div><div class="small">Days</div><input id="days" value="30"/></div>
+        <div><div class="small">Devices</div><input id="max_devices" value="1"/></div>
+        <div><div class="small">Customer</div><input id="customer" placeholder="Tên khách"/></div>
+        <div><div class="small">Note</div><input id="note" placeholder="Gói / ghi chú"/></div>
+        <button class="btn green" onclick="createKey()">⚡ Create</button>
+      </div></div>
+      <div class="card"><h3>License Keys</h3><div style="overflow:auto"><table><thead><tr><th>Key</th><th>Status</th><th>Devices</th><th>Expires</th><th>Last Seen</th><th>Alerts</th><th>Note</th><th>Actions</th></tr></thead><tbody id="keysBody"></tbody></table></div></div>
+    </section>
+
+    <section id="tab_devices" style="display:none"><div class="card"><h3>Devices / Online Users</h3><div style="overflow:auto"><table><thead><tr><th>Key</th><th>Device Label</th><th>Device ID</th><th>IP</th><th>First Seen</th><th>Last Seen</th></tr></thead><tbody id="devicesBody"></tbody></table></div></div></section>
+    <section id="tab_violations" style="display:none"><div class="card"><h3>Share Detection</h3><div style="overflow:auto"><table><thead><tr><th>Time</th><th>Key</th><th>Attempt Device</th><th>IP</th><th>Message</th></tr></thead><tbody id="violationsBody"></tbody></table></div></div></section>
+    <section id="tab_events" style="display:none"><div class="card"><h3>Recent Events</h3><pre id="eventsBox"></pre></div></section>
+  </main>
+</div>
+<div id="toast" class="toast"></div>
+
+<script>
+const ADMIN_PATH = "{{ admin_path }}";
+const $ = id => document.getElementById(id);
+let ADMIN_TOKEN = localStorage.getItem("PIKA_ADMIN_TOKEN") || "";
+
+function toast(msg){$("toast").innerText=msg;$("toast").style.display="block";setTimeout(()=>$("toast").style.display="none",2500)}
+function showTab(name,btn){["keys","devices","violations","events"].forEach(t=>$("tab_"+t).style.display=t===name?"block":"none");document.querySelectorAll(".nav button").forEach(b=>b.classList.remove("active"));btn.classList.add("active")}
+function fmtDate(s){if(!s)return "-";try{return new Date(s).toLocaleString()}catch(e){return s}}
+function statusPill(status){let cls=status==="active"?"active":(status==="blocked"?"blocked":"expired");return `<span class="pill ${cls}">● ${status}</span>`}
+
+async function login(){
+  const token = $("loginToken").value.trim();
+  const password = $("loginPassword").value.trim();
+  const res = await fetch(`/${ADMIN_PATH}/login`, {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({token,password})});
+  const data = await res.json();
+  if(!data.ok){ $("loginMsg").innerText = data.message || "Login failed"; return; }
+  ADMIN_TOKEN = token;
+  localStorage.setItem("PIKA_ADMIN_TOKEN", token);
+  $("login").style.display="none";
+  $("app").style.display="grid";
+  refreshAll();
+}
+
+function logout(){
+  localStorage.removeItem("PIKA_ADMIN_TOKEN");
+  ADMIN_TOKEN = "";
+  location.reload();
+}
+
+async function apiGet(path,params={}){params.token=ADMIN_TOKEN;const res=await fetch(path+"?"+new URLSearchParams(params).toString());const data=await res.json();if(!data.ok)throw new Error(data.message||"API error");return data}
+async function apiPost(path,body={}){body.token=ADMIN_TOKEN;const res=await fetch(path,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});const data=await res.json();if(!data.ok)throw new Error(data.message||"API error");return data}
+
+async function loadStats(){const d=await apiGet("/api/admin/stats");$("s_total").innerText=d.stats.total_keys||0;$("s_active").innerText=d.stats.active_keys||0;$("s_blocked").innerText=d.stats.blocked_keys||0;$("s_online").innerText=d.stats.online_10m||0;$("s_violations").innerText=d.stats.share_violations||0}
+async function loadKeys(){const d=await apiGet("/api/admin/keys");$("keysBody").innerHTML=d.keys.map(k=>`<tr class="${(k.share_violations||0)>0?'dangerRow':''}"><td><b>${k.license_key}</b></td><td>${statusPill(k.status)}</td><td>${k.device_count||0} / ${k.max_devices||1}</td><td>${k.expires_at?fmtDate(k.expires_at):"Lifetime"}</td><td>${fmtDate(k.last_seen)}</td><td>${k.share_violations||0}</td><td>${k.note||""}</td><td><div class="actions"><button class="btn yellow" onclick="resetDevice('${k.license_key}')">Reset</button><button class="btn red" onclick="blockKey('${k.license_key}')">Block</button><button class="btn green" onclick="unblockKey('${k.license_key}')">Unblock</button><button class="btn gray" onclick="deleteKey('${k.license_key}')">Delete</button></div></td></tr>`).join("")}
+async function loadDevices(){const d=await apiGet("/api/admin/devices");$("devicesBody").innerHTML=d.devices.map(x=>`<tr><td>${x.license_key}</td><td>${x.device_label||""}</td><td><span class="small">${x.device_id||""}</span></td><td>${x.ip||""}</td><td>${fmtDate(x.first_seen)}</td><td>${fmtDate(x.last_seen)}</td></tr>`).join("")}
+async function loadViolations(){const d=await apiGet("/api/admin/violations",{limit:200});$("violationsBody").innerHTML=d.violations.map(v=>`<tr class="dangerRow"><td>${fmtDate(v.created_at)}</td><td><b>${v.license_key}</b></td><td>${v.attempted_device_label||v.attempted_device_id||""}</td><td>${v.ip||""}</td><td>${v.message||""}</td></tr>`).join("")}
+async function loadEvents(){const d=await apiGet("/api/admin/events",{limit:120});$("eventsBox").innerText=d.events.map(e=>`${fmtDate(e.created_at)} | ${String(e.event).padEnd(16)} | ${e.license_key||"-"} | ${e.ip||"-"} | ${e.message||""}`).join("\\n")}
+async function createKey(){try{const finalNote=[$("customer").value.trim(),$("note").value.trim()].filter(Boolean).join(" | ");const d=await apiPost("/api/admin/create",{days:parseInt($("days").value||"30"),max_devices:parseInt($("max_devices").value||"1"),note:finalNote});toast("Created: "+d.license_key);await refreshAll()}catch(e){toast("Error: "+e.message)}}
+async function resetDevice(key){if(!confirm("Reset device cho key này?\\n"+key))return;try{await apiPost("/api/admin/reset",{license_key:key});toast("Device reset OK");refreshAll()}catch(e){toast(e.message)}}
+async function blockKey(key){try{await apiPost("/api/admin/block",{license_key:key});toast("Blocked");refreshAll()}catch(e){toast(e.message)}}
+async function unblockKey(key){try{await apiPost("/api/admin/unblock",{license_key:key});toast("Unblocked");refreshAll()}catch(e){toast(e.message)}}
+async function deleteKey(key){if(!confirm("XÓA key này?\\n"+key))return;try{await apiPost("/api/admin/delete",{license_key:key});toast("Deleted");refreshAll()}catch(e){toast(e.message)}}
+async function refreshAll(){try{await Promise.all([loadStats(),loadKeys(),loadDevices(),loadViolations(),loadEvents()])}catch(e){toast("API: "+e.message)}}
+window.onload=()=>{if(ADMIN_TOKEN){$("loginToken").value=ADMIN_TOKEN}}
+</script>
+</body>
+</html>
