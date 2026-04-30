@@ -149,7 +149,7 @@ def make_key(prefix="PIKA"):
 LATEST_VERSION = os.environ.get("PIKA_LATEST_VERSION", "2.1.0")
 UPDATE_URL = os.environ.get("PIKA_UPDATE_URL", "")
 UPDATE_SHA256 = os.environ.get("PIKA_UPDATE_SHA256", "")
-UPDATE_NOTES = os.environ.get("PIKA_UPDATE_NOTES", "New PIKA TOOL update is available.")
+UPDATE_NOTES = os.environ.get("PIKA_UPDATE_NOTES", "New PIKA BOT update is available.")
 
 
 def _parse_version(v):
@@ -167,9 +167,9 @@ def _parse_version(v):
 @APP.route("/api/update/check")
 def api_update_check():
     current = request.args.get("version", "0.0.0")
-    app_id = request.args.get("app", "PIKA_TOOL")
+    app_id = request.args.get("app", "PIKA_BOT")
 
-    if app_id != APP_ID and app_id != "PIKA_TOOL":
+    if app_id != APP_ID and app_id != "PIKA_BOT":
         return jsonify(ok=False, message="wrong app"), 400
 
     has_update = _parse_version(LATEST_VERSION) > _parse_version(current)
