@@ -9,9 +9,9 @@ services:
       - key: PIKA_ADMIN_PATH
         value: pika-admin-7l728obyhd
       - key: PIKA_ADMIN_TOKEN
-        value: CHANGE_ME_ADMIN_TOKEN
+        value: shirotamegumi-kyoshi
       - key: PIKA_ADMIN_PASSWORD
-        value: CHANGE_ME_ADMIN_PASSWORD
+        value: thh1971tannn1010
       - key: PIKA_STRICT_DEVICE_BIND
         value: "1"
       - key: PIKA_AUTO_BLOCK_SHARE
