@@ -135,6 +135,28 @@ def init_db():
     )
     """)
 
+
+    # ========================================================
+    # CLOUD ACCOUNT STORAGE - PHASE 1
+    # One license_key = one private account workspace.
+    # ========================================================
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS cloud_accounts (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        license_key TEXT NOT NULL,
+        email TEXT NOT NULL,
+        password TEXT,
+        recovery TEXT,
+        status TEXT DEFAULT 'active',
+        source TEXT,
+        created_at TEXT,
+        updated_at TEXT,
+        raw_json TEXT,
+        server_updated_at TEXT NOT NULL,
+        UNIQUE(license_key, email)
+    )
+    """)
+
     con.commit()
     con.close()
 
@@ -146,43 +168,6 @@ def make_key(prefix="PIKA"):
         for _ in range(4)
     )
 
-LATEST_VERSION = os.environ.get("PIKA_LATEST_VERSION", "2.1.0")
-UPDATE_URL = os.environ.get("PIKA_UPDATE_URL", "")
-UPDATE_SHA256 = os.environ.get("PIKA_UPDATE_SHA256", "")
-UPDATE_NOTES = os.environ.get("PIKA_UPDATE_NOTES", "New PIKA BOT update is available.")
-
-
-def _parse_version(v):
-    parts = []
-    for x in str(v).strip().split("."):
-        try:
-            parts.append(int(x))
-        except Exception:
-            parts.append(0)
-    while len(parts) < 3:
-        parts.append(0)
-    return tuple(parts[:3])
-
-
-@APP.route("/api/update/check")
-def api_update_check():
-    current = request.args.get("version", "0.0.0")
-    app_id = request.args.get("app", "PIKA_BOT")
-
-    if app_id != APP_ID and app_id != "PIKA_BOT":
-        return jsonify(ok=False, message="wrong app"), 400
-
-    has_update = _parse_version(LATEST_VERSION) > _parse_version(current)
-
-    return jsonify(
-        ok=True,
-        current_version=current,
-        latest_version=LATEST_VERSION,
-        has_update=has_update,
-        download_url=UPDATE_URL if has_update else "",
-        sha256=UPDATE_SHA256 if has_update else "",
-        notes=UPDATE_NOTES,
-    )
 
 def client_ip():
     return (request.headers.get("x-forwarded-for") or request.remote_addr or "").split(",")[0].strip()
@@ -386,6 +371,198 @@ def api_activate():
     log_event(license_key, event, device_id, f"label={device_label}")
 
     return jsonify(ok=True, code="OK", message="License OK", expires_at=lic["expires_at"], max_devices=max_devices, device_id=device_id)
+
+
+
+# ============================================================
+# CLOUD ACCOUNT API - PHASE 1
+# Uses SAME license_key + device_id validation as /api/activate.
+# Keys created by your current Admin Panel automatically work.
+# ============================================================
+
+def validate_license_for_cloud(license_key, device_id, device_label="", fingerprint=None, app_id=None):
+    license_key = str(license_key or "").strip()
+    device_id = str(device_id or "").strip()
+    device_label = str(device_label or "").strip()
+    fingerprint = fingerprint or {}
+    app_id = str(app_id or APP_ID).strip()
+
+    if not license_key or not device_id:
+        return False, (jsonify(ok=False, code="BAD_REQUEST", message="Missing license_key or device_id"), 400)
+
+    con = db()
+    lic = con.execute("SELECT * FROM licenses WHERE license_key=?", (license_key,)).fetchone()
+
+    if not lic:
+        con.close()
+        log_event(license_key, "cloud_invalid_key", device_id)
+        return False, (jsonify(ok=False, code="INVALID_KEY", message="Key không tồn tại"), 403)
+
+    if lic["app_id"] != app_id and lic["app_id"] != APP_ID:
+        con.close()
+        log_event(license_key, "cloud_wrong_app", device_id, f"app={app_id}")
+        return False, (jsonify(ok=False, code="WRONG_APP", message="Key không đúng app"), 403)
+
+    if lic["status"] != "active":
+        con.close()
+        log_event(license_key, "cloud_blocked", device_id)
+        return False, (jsonify(ok=False, code="BLOCKED", message="Key đã bị khóa"), 403)
+
+    exp = parse_iso(lic["expires_at"])
+    if exp and exp < utc_now():
+        con.execute("UPDATE licenses SET status='expired', updated_at=? WHERE license_key=?", (iso(), license_key))
+        con.commit()
+        con.close()
+        log_event(license_key, "cloud_expired", device_id)
+        return False, (jsonify(ok=False, code="EXPIRED", message="Key đã hết hạn"), 403)
+
+    existing = con.execute(
+        "SELECT * FROM devices WHERE license_key=? AND device_id=?",
+        (license_key, device_id),
+    ).fetchone()
+
+    device_count = con.execute(
+        "SELECT COUNT(*) AS c FROM devices WHERE license_key=?",
+        (license_key,),
+    ).fetchone()["c"]
+
+    max_devices = int(lic["max_devices"])
+
+    if not existing and STRICT_DEVICE_BIND and device_count >= max_devices:
+        first_device = con.execute(
+            "SELECT device_id, device_label, ip, first_seen, last_seen FROM devices WHERE license_key=? ORDER BY id ASC LIMIT 1",
+            (license_key,),
+        ).fetchone()
+        con.close()
+
+        msg = "Key đã được kích hoạt trên máy khác"
+        if first_device:
+            msg += f" ({first_device['device_label'] or first_device['device_id'][:10]})"
+
+        log_share_violation(license_key, device_id, device_label, fingerprint, msg)
+        log_event(license_key, "cloud_share_blocked", device_id, msg)
+        return False, (jsonify(ok=False, code="DEVICE_LIMIT", message=msg), 403)
+
+    fp_json = json.dumps(fingerprint, ensure_ascii=False)
+
+    if existing:
+        con.execute(
+            "UPDATE devices SET device_label=?, fingerprint_json=?, last_seen=?, ip=?, user_agent=? WHERE id=?",
+            (device_label, fp_json, iso(), client_ip(), ua(), existing["id"]),
+        )
+    else:
+        con.execute(
+            "INSERT INTO devices(license_key, device_id, device_label, fingerprint_json, first_seen, last_seen, ip, user_agent) VALUES(?,?,?,?,?,?,?,?)",
+            (license_key, device_id, device_label, fp_json, iso(), iso(), client_ip(), ua()),
+        )
+
+    con.commit()
+    con.close()
+    return True, None
+
+
+@APP.route("/api/accounts/list", methods=["POST"])
+def api_accounts_list():
+    data = request.get_json(force=True, silent=True) or {}
+    license_key = str(data.get("license_key", "")).strip()
+    ok, err = validate_license_for_cloud(
+        license_key=license_key,
+        device_id=data.get("device_id", ""),
+        device_label=data.get("device_label", ""),
+        fingerprint=data.get("fingerprint") or {},
+        app_id=data.get("app") or data.get("app_id") or APP_ID,
+    )
+    if not ok:
+        return err
+
+    con = db()
+    rows = con.execute("""
+        SELECT email, password, recovery, status, source, created_at, updated_at, raw_json, server_updated_at
+        FROM cloud_accounts
+        WHERE license_key=?
+        ORDER BY id ASC
+    """, (license_key,)).fetchall()
+    con.close()
+
+    accounts = []
+    for r in rows:
+        item = {}
+        try:
+            raw = json.loads(r["raw_json"] or "{}")
+            if isinstance(raw, dict):
+                item.update(raw)
+        except Exception:
+            pass
+
+        item["email"] = r["email"] or item.get("email", "")
+        item["password"] = r["password"] or item.get("password", "")
+        item["recovery"] = r["recovery"] or item.get("recovery", "")
+        item["status"] = r["status"] or item.get("status", "active")
+        item["source"] = r["source"] or item.get("source", "")
+        item["created_at"] = r["created_at"] or item.get("created_at", "")
+        item["updated_at"] = r["updated_at"] or item.get("updated_at", "")
+        accounts.append(item)
+
+    log_event(license_key, "cloud_accounts_list", data.get("device_id", ""), f"count={len(accounts)}")
+    return jsonify(ok=True, accounts=accounts)
+
+
+@APP.route("/api/accounts/upload-all", methods=["POST"])
+def api_accounts_upload_all():
+    data = request.get_json(force=True, silent=True) or {}
+    license_key = str(data.get("license_key", "")).strip()
+    ok, err = validate_license_for_cloud(
+        license_key=license_key,
+        device_id=data.get("device_id", ""),
+        device_label=data.get("device_label", ""),
+        fingerprint=data.get("fingerprint") or {},
+        app_id=data.get("app") or data.get("app_id") or APP_ID,
+    )
+    if not ok:
+        return err
+
+    accounts = data.get("accounts") or []
+    if not isinstance(accounts, list):
+        return jsonify(ok=False, code="BAD_ACCOUNTS", message="accounts must be list"), 400
+
+    clean = []
+    seen = set()
+    for raw in accounts:
+        if not isinstance(raw, dict):
+            continue
+        email = str(raw.get("email", "")).strip().lower()
+        if not email or "@" not in email or email in seen:
+            continue
+        seen.add(email)
+        clean.append(raw)
+
+    con = db()
+    con.execute("DELETE FROM cloud_accounts WHERE license_key=?", (license_key,))
+    for raw in clean:
+        email = str(raw.get("email", "")).strip().lower()
+        con.execute("""
+            INSERT INTO cloud_accounts(
+                license_key, email, password, recovery, status, source,
+                created_at, updated_at, raw_json, server_updated_at
+            )
+            VALUES(?,?,?,?,?,?,?,?,?,?)
+        """, (
+            license_key,
+            email,
+            str(raw.get("password", "") or ""),
+            str(raw.get("recovery", "") or ""),
+            str(raw.get("status", "active") or "active"),
+            str(raw.get("source", "") or ""),
+            str(raw.get("created_at", "") or ""),
+            str(raw.get("updated_at", "") or ""),
+            json.dumps(raw, ensure_ascii=False),
+            iso(),
+        ))
+
+    con.commit()
+    con.close()
+    log_event(license_key, "cloud_accounts_upload", data.get("device_id", ""), f"count={len(clean)}")
+    return jsonify(ok=True, count=len(clean))
 
 
 @APP.route("/api/admin/keys")
