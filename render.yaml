@@ -4,7 +4,7 @@ services:
     env: python
     plan: free
     buildCommand: pip install -r requirements.txt
-    startCommand: python license_server.py
+    startCommand: gunicorn license_server:APP
     envVars:
       - key: PIKA_ADMIN_PATH
         value: pika-admin-7l728obyhd
