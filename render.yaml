@@ -6,12 +6,14 @@ services:
     buildCommand: pip install -r requirements.txt
     startCommand: gunicorn license_server:APP
     envVars:
+      - key: DATABASE_URL
+        sync: false
       - key: PIKA_ADMIN_PATH
-        value: pika-admin-7l728obyhd
+        sync: false
       - key: PIKA_ADMIN_TOKEN
-        value: shirotamegumi-kyoshi
+        sync: false
       - key: PIKA_ADMIN_PASSWORD
-        value: thh1971tannn1010
+        sync: false
       - key: PIKA_STRICT_DEVICE_BIND
         value: "1"
       - key: PIKA_AUTO_BLOCK_SHARE
