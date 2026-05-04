@@ -534,13 +534,188 @@ def api_admin_delete():
             cur.execute("DELETE FROM devices WHERE license_key=%s", (key,))
             cur.execute("DELETE FROM share_violations WHERE license_key=%s", (key,))
             cur.execute("DELETE FROM cloud_accounts WHERE license_key=%s", (key,))
+            cur.execute("DELETE FROM cloud_tokens WHERE license_key=%s", (key,))
             cur.execute("DELETE FROM licenses WHERE license_key=%s", (key,))
         con.commit()
     log_event(key, "admin_delete_key")
     return jsonify(ok=True)
 
+
+# ============================================================
+# INSTANT LOGIN TOKEN CLOUD SYNC - ADD-ONLY EXTENSION
+# Stores/restores local MSAL token_cache files per license key.
+# ============================================================
+def instant_login_init_db():
+    with db() as con:
+        with con.cursor() as cur:
+            cur.execute("""CREATE TABLE IF NOT EXISTS cloud_tokens (
+                id SERIAL PRIMARY KEY,
+                license_key TEXT NOT NULL,
+                email TEXT NOT NULL,
+                filename TEXT,
+                token_text TEXT,
+                token_size INTEGER DEFAULT 0,
+                local_mtime TEXT,
+                created_at TEXT NOT NULL,
+                server_updated_at TEXT NOT NULL,
+                deleted BOOLEAN NOT NULL DEFAULT FALSE,
+                deleted_at TEXT,
+                UNIQUE(license_key, email)
+            )""")
+            cur.execute("ALTER TABLE cloud_tokens ADD COLUMN IF NOT EXISTS filename TEXT")
+            cur.execute("ALTER TABLE cloud_tokens ADD COLUMN IF NOT EXISTS token_text TEXT")
+            cur.execute("ALTER TABLE cloud_tokens ADD COLUMN IF NOT EXISTS token_size INTEGER DEFAULT 0")
+            cur.execute("ALTER TABLE cloud_tokens ADD COLUMN IF NOT EXISTS local_mtime TEXT")
+            cur.execute("ALTER TABLE cloud_tokens ADD COLUMN IF NOT EXISTS deleted BOOLEAN NOT NULL DEFAULT FALSE")
+            cur.execute("ALTER TABLE cloud_tokens ADD COLUMN IF NOT EXISTS deleted_at TEXT")
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_cloud_tokens_license ON cloud_tokens(license_key)")
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_cloud_tokens_license_email ON cloud_tokens(license_key, email)")
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_cloud_tokens_license_updated ON cloud_tokens(license_key, server_updated_at)")
+        con.commit()
+
+
+def _instant_token_to_dict(r):
+    return {
+        "email": r.get("email") or "",
+        "filename": r.get("filename") or "",
+        "token_text": r.get("token_text") or "",
+        "token_size": int(r.get("token_size") or 0),
+        "local_mtime": r.get("local_mtime") or "",
+        "server_updated_at": r.get("server_updated_at") or "",
+    }
+
+
+@APP.route("/api/tokens/upsert", methods=["POST"])
+def api_tokens_upsert():
+    instant_login_init_db()
+    data = request.get_json(force=True, silent=True) or {}
+    license_key = str(data.get("license_key", "")).strip()
+    ok, err, _ = validate_license_for_cloud(
+        license_key,
+        data.get("device_id", ""),
+        data.get("device_label", ""),
+        data.get("fingerprint") or {},
+        data.get("app") or data.get("app_id") or APP_ID,
+    )
+    if not ok:
+        return err
+
+    tokens = data.get("tokens")
+    if tokens is None and isinstance(data.get("token"), dict):
+        tokens = [data.get("token")]
+    if not isinstance(tokens, list):
+        return jsonify(ok=False, code="BAD_TOKENS", message="tokens must be list"), 400
+
+    now = iso()
+    clean = []
+    seen = set()
+    for raw in tokens:
+        if not isinstance(raw, dict):
+            continue
+        email = str(raw.get("email", "")).strip().lower()
+        token_text = str(raw.get("token_text", "") or "")
+        if not email or "@" not in email or not token_text or email in seen:
+            continue
+        seen.add(email)
+        clean.append({
+            "email": email,
+            "filename": str(raw.get("filename", "") or ""),
+            "token_text": token_text,
+            "token_size": int(raw.get("token_size") or len(token_text.encode("utf-8", errors="ignore"))),
+            "local_mtime": str(raw.get("local_mtime", "") or ""),
+        })
+
+    with db() as con:
+        with con.cursor() as cur:
+            for item in clean:
+                cur.execute("""
+                    INSERT INTO cloud_tokens(
+                        license_key, email, filename, token_text, token_size,
+                        local_mtime, created_at, server_updated_at, deleted, deleted_at
+                    )
+                    VALUES(%s,%s,%s,%s,%s,%s,%s,%s,FALSE,NULL)
+                    ON CONFLICT (license_key, email)
+                    DO UPDATE SET
+                        filename=EXCLUDED.filename,
+                        token_text=EXCLUDED.token_text,
+                        token_size=EXCLUDED.token_size,
+                        local_mtime=EXCLUDED.local_mtime,
+                        server_updated_at=EXCLUDED.server_updated_at,
+                        deleted=FALSE,
+                        deleted_at=NULL
+                """, (
+                    license_key, item["email"], item["filename"], item["token_text"],
+                    item["token_size"], item["local_mtime"], now, now,
+                ))
+        con.commit()
+    log_event(license_key, "cloud_tokens_upsert", data.get("device_id", ""), f"count={len(clean)}")
+    return jsonify(ok=True, count=len(clean), server_time=now)
+
+
+@APP.route("/api/tokens/sync", methods=["POST"])
+def api_tokens_sync():
+    instant_login_init_db()
+    data = request.get_json(force=True, silent=True) or {}
+    license_key = str(data.get("license_key", "")).strip()
+    ok, err, _ = validate_license_for_cloud(
+        license_key,
+        data.get("device_id", ""),
+        data.get("device_label", ""),
+        data.get("fingerprint") or {},
+        data.get("app") or data.get("app_id") or APP_ID,
+    )
+    if not ok:
+        return err
+
+    since = str(data.get("since") or "").strip()
+    force = bool(data.get("force"))
+    now = iso()
+    with db() as con:
+        with con.cursor() as cur:
+            if force or not since:
+                cur.execute("SELECT * FROM cloud_tokens WHERE license_key=%s AND deleted=FALSE ORDER BY id ASC", (license_key,))
+                rows = cur.fetchall()
+                deleted = []
+            else:
+                cur.execute("SELECT * FROM cloud_tokens WHERE license_key=%s AND server_updated_at > %s ORDER BY server_updated_at ASC", (license_key, since))
+                rows = cur.fetchall()
+                deleted = [r["email"] for r in rows if r.get("deleted")]
+                rows = [r for r in rows if not r.get("deleted")]
+    tokens = [_instant_token_to_dict(r) for r in rows]
+    log_event(license_key, "cloud_tokens_sync", data.get("device_id", ""), f"tokens={len(tokens)}, deleted={len(deleted)}")
+    return jsonify(ok=True, tokens=tokens, deleted_emails=deleted, server_time=now)
+
+
+@APP.route("/api/tokens/delete", methods=["POST"])
+def api_tokens_delete():
+    instant_login_init_db()
+    data = request.get_json(force=True, silent=True) or {}
+    license_key = str(data.get("license_key", "")).strip()
+    ok, err, _ = validate_license_for_cloud(
+        license_key,
+        data.get("device_id", ""),
+        data.get("device_label", ""),
+        data.get("fingerprint") or {},
+        data.get("app") or data.get("app_id") or APP_ID,
+    )
+    if not ok:
+        return err
+    emails = data.get("emails") or []
+    if isinstance(data.get("email"), str):
+        emails.append(data.get("email"))
+    emails = sorted({str(e).strip().lower() for e in emails if str(e).strip()})
+    now = iso()
+    with db() as con:
+        with con.cursor() as cur:
+            for email in emails:
+                cur.execute("UPDATE cloud_tokens SET deleted=TRUE, deleted_at=%s, server_updated_at=%s WHERE license_key=%s AND email=%s", (now, now, license_key, email))
+        con.commit()
+    log_event(license_key, "cloud_tokens_delete", data.get("device_id", ""), f"count={len(emails)}")
+    return jsonify(ok=True, count=len(emails), server_time=now)
+
 try:
     init_db()
+    instant_login_init_db()
 except Exception as e:
     print("[DB_INIT_ERROR]", e)
 
